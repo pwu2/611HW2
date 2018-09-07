@@ -1,0 +1,281 @@
+---
+title: "36611 HW2"
+author: "[your name here["
+date: '`r format(Sys.time(), "%d %B, %Y")`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Setting required files and constants
+
+```{r constants, echo=FALSE}
+## Required files ##
+#   readme.txt: info from client
+#   camelCase.R: (read from github) converts variable names
+#                to camel case
+DEMOG_FILE = "demogs.csv" # patient demographs
+VISIT_FILE = "visits.csv" # patient clinic visits
+DX_FILE = "DxCodes.csv" # diagnosis codes
+
+## Other constants
+DX_COL_COUNT = 3  # client says there are up to 3 diagnoses per visit
+
+# Column names (orignal and improved)
+demogColsOrig = c("ID", "Gender: 0=female; 1=male",
+                 "Primary Race: 1=white; 2=black; 4=Asian",
+                 "Years of Education", "Date of Birth", "Onset Age")
+demogColsOrig = make.names(demogColsOrig)
+demogColsImpr = c("id", "male", "race", "education", "dob", "onsetAge")
+
+visitColDrop = make.names(c("MMS7", "MMSW", "CDR Total Score"))
+visitsColsOrig = c("ID", "Date", "DX1", "DX2", "DX3",
+                   "MMS", "CDR Sum of Boxes", 
+                   "MisidentifyPeople", "MisidentifySelf", "Paranoid",
+                   "TelevisionIsReal", "DeadPersonStillAlive",
+                   "HouseNotHome")
+visitsColsOrig = make.names(visitsColsOrig)
+visitsColsImpr = c("id", "date", "dx1", "dx2", "dx3",
+                   "MMS", "CDRBox",
+                   "misidentifyPeople", "misidentifySelf", "paranoid",
+                   "televisionIsReal", "deadPersonStillAlive",
+                   "houseNotHome")
+```
+
+
+
+# Read in files, checking and improving column names
+```{r read and fix cols, echo=FALSE, comment=NA}
+demog = try(read.csv(DEMOG_FILE, as.is=TRUE), silent=TRUE)
+if (is(demog, "try-error")) {
+  stop("cannot read file '", DEMOG_FILE, '" in ', getwd())
+}
+if (ncol(demog) != length(demogColsOrig)) {
+  stop("original version of ", DEMOG_FILE, " had ", length(demogColsOrig),
+       " columns, but new version has ", ncol(demog))
+}
+demogMatch = match(demogColsOrig, names(demog))
+missCol = is.na(demogMatch)
+if (any(missCol)) {
+  stop("missing field(s) in ", DEMOG_FILE, ": ",
+   paste(demogColsOrig[missCol], collapse=", "))
+}
+names(demog)[demogMatch] = demogColsImpr
+cat("Initial structure of demographics data.frame:\n")
+str(demog)
+
+visits = try(read.csv(VISIT_FILE, as.is=TRUE), silent=TRUE)
+if (is(visits, "try-error")) {
+  stop("cannot read file '", VISIT_FILE, '" in ', getwd())
+}
+# Drop unneeded columns
+visits = visits[, names(visits) %in% visitColDrop == FALSE]
+if (ncol(visits) != length(visitsColsOrig)) {
+  stop("original version of ", VISIT_FILE, " had ", length(visitsColsOrig),
+       " columns, but new version has ", ncol(visits))
+}
+visitsMatch = match(visitsColsOrig, names(visits))
+missCol = is.na(visitsMatch)
+if (any(missCol)) {
+  stop("missing field(s) in ", VISIT_FILE, ": ",
+       paste(visitsColsOrig[missCol], collapse=", "))
+}
+names(visits)[visitsMatch] = visitsColsImpr
+rm(demogMatch, missCol, visitsMatch)
+cat("\nInitial structure of visits data.frame:\n")
+str(visits)
+```
+
+
+# Check key ("id")
+```{r check key, echo=FALSE, comment=NA}
+cat("Checking 'id' key\n")
+dupDemog = duplicated(demog$id)
+if (any(dupDemog)) {
+  stop("Duplicate ids found in ", DEMOG_FILE, ": ",
+       paste(demog$id[dupDemog], collapse=", "))
+} else {
+  cat("All ids are unique in ", DEMOG_FILE, "\n")
+}
+
+orphanDemog = setdiff(demog$id, visits$id)
+if (length(orphanDemog) > 0) {
+  cat("Id(s) of patients with no visits: ",
+      paste(orphanDemog, collapse=", "), "\n")
+  demog = demog[demog$id %in% orphanDemog == FALSE, ]
+  cat("These have been removed.\n")
+}
+
+orphanVisits = setdiff(visits$id, demog$id)
+if (length(orphanVisits) > 0) {
+  stop("Id(s) of patients with visits but no demographics: ",
+       paste(orphanVisits, collapse=", "))
+}
+rm(dupDemog, orphanDemog, orphanVisits)
+cat("'id' key is OK\n")
+
+# Histogram of visits
+# WARNING: Always use exclude=NULL with table() in EDA
+# Otherwise you will not see the missing values!
+visitCounts = table(table(visits$id, exclude=NULL))
+# Note: histogram() handles zeros and discrete "x" poorly
+barplot(visitCounts, xlab="Number of visits",
+        ylab="Number of patients", main="POP Visit Distribution")
+rm(visitCounts)
+```
+
+# Fixup demog: Construct date and factors
+```{r fix demog, echo=FALSE, comment=NA}
+demogDateNA = is.na(demog$dob)
+newDates = as.Date(demog$dob, format="%Y-%m-%d")
+if (sum(is.na(newDates)) != sum(demogDateNA)) {
+  badDates = !demogDateNA & is.na(newDates)
+  print(demog[badDates, c("id", "dob")])
+  rm(badDates)
+  stop(sum(is.na(newDates)) - sum(demogDateNA),
+       " demog date(s) is/are invalid.")
+}
+demog$dob = newDates
+rm(demogDateNA, newDates)
+
+cat("Original race distribution:")
+table(demog$race, exclude=NULL)
+demog$black = as.numeric(demog$race == 2)
+demog$race = factor(demog$race, levels=c(1, 2, 4),
+                    labels=c("white", "black", "Asian"))
+cat("\nRecoded race:")
+with(demog, table(race, black, exclude=NULL))
+
+# Add a coarser education variable
+cat("\nOriginal education distribution:")
+table(demog$education, exclude=NULL)
+demog$educ2 = demog$education
+demog$educ2[demog$educ2 < 11] = 11
+demog$educ2[demog$educ2 > 12 & demog$educ <16] = 15
+demog$educ2[demog$educ2 > 16] = 17
+demog$educ2 = factor(demog$educ2, levels=c(11, 12, 15, 16, 17),
+                     labels=c("<HS", "HS", "some college",
+                              "college", ">college"))
+# verify correct recoding
+cat("\nRecoded education distribution:")
+table(demog$education, demog$educ2, exclude=NULL)
+
+cat("\nSummary of demographics:\n")
+summary(demog)
+```
+
+# Fixup visits
+# Code symptoms with 8 or 9 as NA
+```{r fix visits, echo=FALSE, comment=NA}
+# Change "date" to a Date
+visitDateNA = is.na(visits$date)
+newDates = as.Date(visits$date, format="%Y-%m-%d")
+if (sum(is.na(newDates)) != sum(visitDateNA)) {
+  badDates = !visitDateNA & is.na(newDates)
+  print(visits[badDates, c("id", "date")])
+  rm(badDates)
+  stop(sum(is.na(visits$date)) - nMissVisitDate,
+       " visit dates are invalid.")
+}
+visits$date = newDates
+rm(visitDateNA, newDates)
+
+# Code NAs for dx and symptoms
+for (dx in paste0("dx", 1:DX_COL_COUNT)) {
+  visits[visits[, dx] == -2, dx] = NA
+}
+
+symptomCols = match(c("misidentifyPeople", "misidentifySelf",
+                      "paranoid", "televisionIsReal",
+                      "deadPersonStillAlive"),
+                    names(visits))
+cat("original symptom distributions:\n")
+lapply(visits[, symptomCols], table, exclude=NULL)
+# [Note: appropriate use of "for" loop]
+for (col in symptomCols) {
+  visits[visits[, col] %in% c(8, 9), col] = NA
+}
+cat("\nFinal symptom distributions:\n")
+lapply(visits[, symptomCols], table, exclude=NULL)
+
+# Create psychoisSum variable
+visits$psychosisSum = apply(visits[, symptomCols], 1,
+                            sum, na.rm=TRUE)
+
+cat("\nSummary of visits:\n")
+summary(visits)
+```
+
+# Univariate non-graphical EDA
+```{r univariate non-graphical EDA, echo=FALSE, comment=NA}
+# Provide code for these variables: race, educ2, onset,
+#   first digit of dx1, first digit of dx2, CDRBox, MMS,
+#   paranoid, houseNotHome, psychosisSum
+# Make a few key conclusions.
+
+
+```
+Conclusions:
+
+
+
+
+# Univariate graphical EDA
+```{r univariate graphical EDA, echo=FALSE, comment=NA}
+# Provide code for these variables: race, educ2, onsetAge,
+#   first digit of dx1, first digit of dx2, CDRBox, MMS,
+#   paranoid, houseNotHome, psychosisSum
+# Make a few key conclusions.
+
+
+```
+Conclusions:
+
+
+
+
+# Bivariate non-graphical EDA
+```{r bivariate non-graphical, echo=FALSE, comment=NA}
+cat("Cross-tabulation of race and education\n")
+with(demog, table(race, educ2, exclude=NULL))
+
+# Note differences in output from different coding:
+cat("\nCross-tabulation of race and education")
+table(demog$race, demog$educ2, exclude=NULL)
+
+# Note how to change details of the output
+cat("\nPercent at each educational level by race\n")
+temp = with(demog, prop.table(table(black, educ2, exclude=NULL),
+                              margin=1))
+# Note: it would be easy to get black/non-black backwards
+dimnames(temp) = list(race=c("non-black", "black"),
+                      education=colnames(temp))
+round(100*temp, digits=0)
+rm(temp)
+
+
+cat("\nCorrelation of education with onsetAge: ")
+cat(with(demog, cor(education, onsetAge)), "\n")
+
+cat("\nCorrelation of symptoms\n")
+round(cor(visits[, symptomCols], use="pairwise.complete.obs"), digits=2)
+```
+Conclusions:
+
+Years of education are weakly negatively correlated with age of onset.  This suggests that
+less educated people develop Alzheimer's disease later in life.
+
+
+# Bivariate graphical EDA
+```{r bivariate graphical, echo=FALSE, comment=NA}
+# Provide code showing the relationship between educ2 and race,
+# between psychosis sum (DV) and dx1<200 (IV), and between
+# psychosis sum (DV) and MMS.
+# Make a few key conclusions.
+
+```
+Conclusions:
+
